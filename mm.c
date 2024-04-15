@@ -37,7 +37,7 @@ team_t team = {
 
 #define WSIZE 4 /* Word and header/footer size (bytes) */
 #define DSIZE 8 /* Double word size (bytes) */
-#define CHUNKSIZE (1<<6) /* Extend heap by this amount (bytes) */
+#define CHUNKSIZE (1<<12) /* Extend heap by this amount (bytes) */
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))
 
@@ -68,7 +68,6 @@ static void place(void *bp, size_t asize);
 
 /* Points to first byte of heap */
 static char *heap_listp; 
-static char *heap_curp; 
 
 
 /* 
@@ -84,7 +83,7 @@ int mm_init(void)
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE,1));         /* Prologue footer */
     PUT(heap_listp + (3*WSIZE), PACK(0,1));             /* Epilogue header */
     heap_listp += (2*WSIZE);
-    heap_curp = heap_listp;
+
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL){
         return -1;
@@ -211,23 +210,26 @@ static void *coalesce(void *bp)
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-    heap_curp = bp;
     return bp;
 }
 
 /*
- * find_fit - Search the available list from next pointer and select the first available block of size.
+ * find_fit - Search the available list from scratch and find the minimum available block of size.
  */
 static void *find_fit(size_t asize) {
-    /* Next-fit search */
+    /* Best-fit search */
     void *bp;
+    void *best_fit = NULL;
 
-    for (bp = heap_curp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-            return bp;
+            if (best_fit == NULL || GET_SIZE(HDRP(bp)) < GET_SIZE(HDRP(best_fit))) {
+                best_fit = bp;
+            }
         }
     }
-    return NULL;    /* No fit */
+
+    return best_fit;
 }
 
 /*
