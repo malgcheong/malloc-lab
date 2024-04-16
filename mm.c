@@ -60,11 +60,17 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
+/* Given free block ptr bp, compute address of pre succesor and succesor blocks */
+#define PRES_FREEP(bp) (*(void**)(bp))
+#define SUCC_FREEP(bp) (*(void**)(bp + WSIZE))
+
 /* Internal Function Prototype */
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);        
 static void *find_fit(size_t asize);  
 static void place(void *bp, size_t asize);
+static void add_freeblock(void *bp);
+static void delete_freeblock(void *bp);
 
 /* Points to first byte of heap */
 static char *heap_listp; 
@@ -76,13 +82,17 @@ static char *heap_listp;
 int mm_init(void)
 {
     /* Create the initial empty heap */
-    if((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
+    if((heap_listp = mem_sbrk(6*WSIZE)) == (void *)-1)
         return -1;
     PUT(heap_listp, 0);                                 /* Aligment padding */
-    PUT(heap_listp + (1*WSIZE), PACK(DSIZE,1));         /* Prologue header */
-    PUT(heap_listp + (2*WSIZE), PACK(DSIZE,1));         /* Prologue footer */
-    PUT(heap_listp + (3*WSIZE), PACK(0,1));             /* Epilogue header */
+    PUT(heap_listp + (1*WSIZE), PACK(16,1));            /* Prologue header */
+    PUT(heap_listp + (2*WSIZE), NULL);                  /* Prologue Pre Successor Pointer */
+    PUT(heap_listp + (3*WSIZE), NULL);                  /* Prologue Successor Pointer */
+    PUT(heap_listp + (4*WSIZE), PACK(16,1));            /* Prologue footer */
+    PUT(heap_listp + (5*WSIZE), PACK(0,1));             /* Epilogue header */
     heap_listp += (2*WSIZE);
+
+    if (extend_heap(4) == NULL) return -1;
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL){
@@ -190,46 +200,49 @@ static void *coalesce(void *bp)
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc){                  /* Case 1 */
+        add_freeblock(bp);
         return bp;
     }
     else if (prev_alloc && !next_alloc){            /* Case 2 */
+        delete_freeblock(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
     }
     else if (!prev_alloc && next_alloc) {           /* Case 3 */
+        delete_freeblock(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
     else {                                          /* Case 4 */
+        delete_freeblock(PREV_BLKP(bp));
+        delete_freeblock(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + 
             GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
+    add_freeblock(bp);
     return bp;
 }
 
 /*
- * find_fit - Search the available list from scratch and find the minimum available block of size.
+ * find_fit - Search the available list from scratch and select the first available block of size.
  */
 static void *find_fit(size_t asize) {
-    /* Best-fit search */
+    /* First-fit search */
     void *bp;
-    void *best_fit = NULL;
 
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-            if (best_fit == NULL || GET_SIZE(HDRP(bp)) < GET_SIZE(HDRP(best_fit))) {
-                best_fit = bp;
-            }
+    for (bp = heap_listp; GET_ALLOC(HDRP(bp)) != 1; bp = PRES_FREEP(bp)) {
+        if(GET_SIZE(HDRP(bp)) >= asize){
+            return bp;
         }
     }
 
-    return best_fit;
+    return NULL;
 }
 
 /*
@@ -239,14 +252,39 @@ static void *find_fit(size_t asize) {
 static void place(void *bp, size_t asize) {
     size_t csize = GET_SIZE(HDRP(bp));
 
+    delete_freeblock(bp);
     if ((csize - asize) >= (2*DSIZE)) {
         PUT(HDRP(bp), PACK(asize, 1));     
         PUT(FTRP(bp), PACK(asize, 1));      
         bp = NEXT_BLKP(bp);      
         PUT(HDRP(bp), PACK(csize-asize, 0)); 
         PUT(FTRP(bp), PACK(csize-asize, 0));
+        add_freeblock(bp);
     } else {
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
+    }
+}
+
+/*
+ * add_freeblock - Add a free block to the free block list and set the last block to heap_listp
+ */
+static void add_freeblock(void *bp){
+    PRES_FREEP(bp) = heap_listp;
+    SUCC_FREEP(bp) = NULL;
+    SUCC_FREEP(heap_listp) = bp;
+    heap_listp = bp;
+}
+
+/*
+ * delete_freeblock - Delete one block from the free block list and link before and after the deleted block.
+ */
+static void delete_freeblock(void *bp){
+    if(bp == heap_listp){
+        SUCC_FREEP(PRES_FREEP(bp)) = NULL;
+        heap_listp = PRES_FREEP(bp);
+    }else{
+        SUCC_FREEP(PRES_FREEP(bp)) = SUCC_FREEP(bp);
+        PRES_FREEP(SUCC_FREEP(bp)) = PRES_FREEP(bp);
     }
 }
