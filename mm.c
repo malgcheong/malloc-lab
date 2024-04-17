@@ -157,18 +157,46 @@ void mm_free(void *bp)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
+    if (size <= 0)
+    {
+        mm_free(ptr);
+        return 0;
+    }
+    if (ptr == NULL)
+        return mm_malloc(size);
+
+    size_t old_size = GET_SIZE(HDRP(ptr));
+    size_t prev_size = GET_SIZE(HDRP(PREV_BLKP(ptr)));
+    size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(ptr)));
+    size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(ptr)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
+
+    if (size + 2 * WSIZE <= old_size)
+        return ptr;
+    if (!next_alloc && size + 2 * WSIZE <= old_size + next_size)
+    {
+        delete_freeblock(NEXT_BLKP(ptr));
+        PUT(HDRP(ptr), PACK(old_size + next_size, 1));
+        PUT(FTRP(ptr), PACK(old_size + next_size, 1));
+        return ptr;
+    }
+    if (!prev_alloc && size + 2 * WSIZE <= old_size + prev_size)
+    {
+        char *pre = PREV_BLKP(ptr);
+        delete_freeblock(pre);
+        memmove(pre, ptr, old_size);
+        PUT(HDRP(pre), PACK(old_size + prev_size, 1));
+        PUT(FTRP(pre), PACK(old_size + prev_size, 1));
+        return pre;
+    }
+
     void *newptr;
-    size_t copySize;
 
     newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
-    copySize = GET_SIZE(HDRP(oldptr));
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
+    memcpy(newptr, ptr, old_size);
+    mm_free(ptr);
     return newptr;
 }
 
